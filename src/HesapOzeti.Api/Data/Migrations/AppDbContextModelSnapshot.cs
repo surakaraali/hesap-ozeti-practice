@@ -106,6 +106,10 @@ namespace HesapOzeti.Api.Data.Migrations
 
                     b.HasIndex("BankAccountId");
 
+                    b.HasIndex("BankAccountId", "BankReferenceNo")
+                        .IsUnique()
+                        .HasFilter("[ErpSyncStatus] <> 3");
+
                     b.ToTable("BankTransactions");
                 });
 
@@ -122,6 +126,9 @@ namespace HesapOzeti.Api.Data.Migrations
 
                     b.Property<long>("BankTransactionId")
                         .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("CancelledAt")
+                        .HasColumnType("datetime2");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
@@ -145,6 +152,10 @@ namespace HesapOzeti.Api.Data.Migrations
                         .HasColumnType("nvarchar(20)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BankTransactionId")
+                        .IsUnique()
+                        .HasFilter("[CancelledAt] IS NULL");
 
                     b.ToTable("ErpVouchers");
                 });

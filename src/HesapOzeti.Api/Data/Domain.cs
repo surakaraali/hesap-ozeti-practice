@@ -14,7 +14,8 @@ public class BankAccount
 
 public enum Direction { Incoming = 1, Outgoing = 2 }
 
-public enum ErpSyncStatus { Pending = 0, Exported = 1, Failed = 2 }
+/// <summary>Duplicate: the bank sent the same transaction twice. Kept for audit, never exported.</summary>
+public enum ErpSyncStatus { Pending = 0, Exported = 1, Failed = 2, Duplicate = 3 }
 
 public class BankTransaction
 {
@@ -46,4 +47,7 @@ public class ErpVoucher
     public decimal Amount { get; set; }
     public required string Currency { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>Set when accounting cancels the voucher in Tiger (for example a duplicate).</summary>
+    public DateTime? CancelledAt { get; set; }
 }

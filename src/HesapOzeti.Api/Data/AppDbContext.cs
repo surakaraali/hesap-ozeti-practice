@@ -25,6 +25,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Amount).HasColumnType("decimal(18,2)");
             e.Property(x => x.Currency).HasMaxLength(3);
             e.Property(x => x.Description).HasMaxLength(250);
+            // Kept on purpose: the filtered index below cannot serve a plain "WHERE BankAccountId = x".
+            e.HasIndex(x => x.BankAccountId);
+            // The bank's reference is unique per account. Old duplicates are kept but left out of the index.
+            e.HasIndex(x => new { x.BankAccountId, x.BankReferenceNo }).IsUnique().HasFilter("[ErpSyncStatus] <> 3");
         });
 
         b.Entity<ErpVoucher>(e =>
@@ -33,6 +37,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.VoucherType).HasMaxLength(20);
             e.Property(x => x.Amount).HasColumnType("decimal(18,2)");
             e.Property(x => x.Currency).HasMaxLength(3);
+            // Idempotency key: one live voucher per bank transaction, however many times we send it.
+            e.HasIndex(x => x.BankTransactionId).IsUnique().HasFilter("[CancelledAt] IS NULL");
         });
     }
 }

@@ -1,4 +1,5 @@
 using HesapOzeti.Api.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Quartz;
 
@@ -40,6 +41,8 @@ public class ErpExportService(AppDbContext db, FakeTigerClient tiger, ILogger<Er
 /// <summary>
 /// Simulates the Logo Tiger integration. Tiger is a separate system: it saves the voucher on its side
 /// and sometimes answers too late, so the caller sees a timeout although the voucher exists.
+/// Creating a voucher is idempotent: the bank transaction id is the key, and a second call for the
+/// same transaction returns the existing voucher instead of writing a new one.
 /// </summary>
 public class FakeTigerClient(IDbContextFactory<AppDbContext> tigerDb, IConfiguration config)
 {
@@ -59,7 +62,16 @@ public class FakeTigerClient(IDbContextFactory<AppDbContext> tigerDb, IConfigura
             CreatedAt = DateTime.UtcNow,
         };
         db.ErpVouchers.Add(voucher);
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 2601 or 2627 })
+        {
+            // The unique index says a live voucher already exists, e.g. our earlier call timed out after Tiger saved it.
+            return await db.ErpVouchers.Where(v => v.BankTransactionId == tx.Id && v.CancelledAt == null)
+                .Select(v => v.VoucherNo).SingleAsync(ct);
+        }
         voucher.VoucherNo = $"TGR-{voucher.Id:D9}";
         await db.SaveChangesAsync(ct);
 
@@ -69,6 +81,8 @@ public class FakeTigerClient(IDbContextFactory<AppDbContext> tigerDb, IConfigura
     }
 }
 
+// Two overlapping runs would pick the same Pending rows.
+[DisallowConcurrentExecution]
 public class ErpExportJob(ErpExportService export) : IJob
 {
     public async ValueTask Execute(IJobExecutionContext context, CancellationToken ct) => await export.ExportPendingAsync(ct: ct);

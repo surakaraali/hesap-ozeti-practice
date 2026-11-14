@@ -68,6 +68,7 @@ public class TransactionSyncService(AppDbContext db, BankApiClient bank, ILogger
     }
 }
 
+[DisallowConcurrentExecution]
 public class TransactionSyncJob(TransactionSyncService sync) : IJob
 {
     public async ValueTask Execute(IJobExecutionContext context, CancellationToken ct) =>

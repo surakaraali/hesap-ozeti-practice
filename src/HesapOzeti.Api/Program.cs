@@ -54,7 +54,7 @@ app.MapGet("/accounts/{id:int}/transactions", async (int id, int? page, int? pag
 
     var p = page ?? 1;
     var size = pageSize ?? 50;
-    var query = db.BankTransactions.Where(t => t.BankAccountId == id);
+    var query = db.BankTransactions.Where(t => t.BankAccountId == id && t.ErpSyncStatus != ErpSyncStatus.Duplicate);
     if (from is not null) query = query.Where(t => t.TransactionDate >= from);
     if (to is not null) query = query.Where(t => t.TransactionDate < to);
 
