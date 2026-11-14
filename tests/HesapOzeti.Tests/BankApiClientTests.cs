@@ -52,27 +52,78 @@ public class BankApiClientTests
         Assert.Contains(bank.Requests, r => r.StartsWith("/fake-bank/v2/"));
     }
 
-    static (BankApiClient, StubBank) Client(string? version, string json)
+    [Fact]
+    public async Task Gets_a_new_token_when_the_old_one_is_about_to_expire()
     {
-        var bank = new StubBank(_ => json);
+        var clock = new TestClock();
+        var (client, bank) = Client("v2", V2Json, new BankTokenStore(clock));
+
+        await client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5));
+        clock.Advance(TimeSpan.FromSeconds(60));
+        await client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)); // 60 s left of 120: still valid
+        clock.Advance(TimeSpan.FromSeconds(40));
+        await client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)); // 20 s left, inside the 30 s margin
+
+        Assert.Equal(2, bank.TokenRequests);
+    }
+
+    [Fact]
+    public async Task Refreshes_the_token_and_retries_once_after_a_401()
+    {
+        var calls = 0;
+        var bank = new StubBank(_ => ++calls == 1 ? (HttpStatusCode.Unauthorized, """{"error":"invalid_token"}""") : (HttpStatusCode.OK, V2Json));
+        var (client, _) = Client("v2", bank);
+
+        var t = Assert.Single(await client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)));
+
+        Assert.Equal(Expected, t);
+        Assert.Equal(2, bank.TokenRequests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)] // still 401 after the refresh
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Throws_instead_of_returning_an_empty_list_when_the_bank_fails(HttpStatusCode status)
+    {
+        var (client, _) = Client("v2", new StubBank(_ => (status, """{"error":"x"}""")));
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)));
+
+        Assert.Equal(status, ex.StatusCode);
+        Assert.Contains("TR01", ex.Message);
+    }
+
+    static (BankApiClient, StubBank) Client(string? version, string json, BankTokenStore? tokens = null) =>
+        Client(version, new StubBank(_ => (HttpStatusCode.OK, json)), tokens);
+
+    internal static (BankApiClient, StubBank) Client(string? version, StubBank bank, BankTokenStore? tokens = null)
+    {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Bank:ApiVersion"] = version }).Build();
-        return (new BankApiClient(new HttpClient(bank) { BaseAddress = new Uri("http://bank/") }, config, NullLogger<BankApiClient>.Instance), bank);
+        var client = new BankApiClient(new HttpClient(bank) { BaseAddress = new Uri("http://bank/") }, config,
+            tokens ?? new BankTokenStore(TimeProvider.System), NullLogger<BankApiClient>.Instance);
+        return (client, bank);
     }
 }
 
-/// <summary>Answers the token call itself and every other call with the given function.</summary>
-public class StubBank(Func<HttpRequestMessage, string> respond, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
+/// <summary>Hands out 120-second tokens itself and answers every other call with the given function.</summary>
+public class StubBank(Func<HttpRequestMessage, (HttpStatusCode Status, string Json)> respond) : HttpMessageHandler
 {
     public List<string> Requests { get; } = [];
+    public int TokenRequests { get; private set; }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         Requests.Add(request.RequestUri!.PathAndQuery);
-        var isToken = request.RequestUri.AbsolutePath.EndsWith("/oauth/token");
-        return Task.FromResult(new HttpResponseMessage(isToken ? HttpStatusCode.OK : status)
-        {
-            Content = new StringContent(isToken ? """{"accessToken":"t","expiresIn":120}""" : respond(request),
-                System.Text.Encoding.UTF8, "application/json"),
-        });
+        var (status, json) = request.RequestUri.AbsolutePath.EndsWith("/oauth/token")
+            ? (HttpStatusCode.OK, $$"""{"accessToken":"t{{++TokenRequests}}","expiresIn":120}""")
+            : respond(request);
+        return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") });
     }
+}
+
+public class TestClock : TimeProvider
+{
+    DateTimeOffset _now = new(2026, 11, 5, 9, 0, 0, TimeSpan.Zero);
+    public override DateTimeOffset GetUtcNow() => _now;
+    public void Advance(TimeSpan by) => _now += by;
 }

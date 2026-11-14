@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Net.Http.Headers;
 using HesapOzeti.Api.Data;
 using HesapOzeti.Api.FakeBank;
@@ -12,33 +13,40 @@ public record BankTransactionDto(string ReferenceNo, DateTime Date, decimal Amou
 /// Adapter for the bank API. Turns the bank's format into our model, so nothing else changes when the bank
 /// changes its API. Bank:ApiVersion picks v2 (default) or v1, so we can switch back without a deploy.
 /// </summary>
-public class BankApiClient(HttpClient http, IConfiguration config, ILogger<BankApiClient> log)
+public class BankApiClient(HttpClient http, IConfiguration config, BankTokenStore tokens, ILogger<BankApiClient> log)
 {
-    static string? _token;
-
+    /// <summary>Throws on any bank error: an empty list must mean "no transactions", never "the call failed".</summary>
     public async Task<List<BankTransactionDto>> GetTransactionsAsync(string iban, DateOnly date, CancellationToken ct = default)
     {
-        try
-        {
-            _token ??= await GetTokenAsync(ct);
+        var v1 = config["Bank:ApiVersion"] == "v1";
+        var url = v1
+            ? $"fake-bank/v1/transactions?iban={iban}&date={date.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture)}"
+            : $"fake-bank/v2/transactions?iban={iban}&date={date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}";
 
-            var v1 = config["Bank:ApiVersion"] == "v1";
-            var url = v1
-                ? $"fake-bank/v1/transactions?iban={iban}&date={date.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture)}"
-                : $"fake-bank/v2/transactions?iban={iban}&date={date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}";
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-            var response = await http.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return [];
-
-            return v1 ? MapV1((await response.Content.ReadFromJsonAsync<V1Response>(ct))!)
-                      : MapV2((await response.Content.ReadFromJsonAsync<V2Response>(ct))!);
-        }
-        catch (Exception ex)
+        var response = await SendAsync(url, ct);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
-            log.LogDebug(ex, "Bank call failed");
-            return [];
+            // The bank can revoke a token before its expiry. Get a fresh one and try once more.
+            log.LogWarning("Bank returned 401 for {Iban}, refreshing the token and retrying once", iban);
+            tokens.Clear();
+            response = await SendAsync(url, ct);
         }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"Bank returned {(int)response.StatusCode} for {iban} on {date:yyyy-MM-dd}: {body}", null, response.StatusCode);
+        }
+
+        return v1 ? MapV1((await response.Content.ReadFromJsonAsync<V1Response>(ct))!)
+                  : MapV2((await response.Content.ReadFromJsonAsync<V2Response>(ct))!);
+    }
+
+    async Task<HttpResponseMessage> SendAsync(string url, CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetTokenAsync(ct));
+        return await http.SendAsync(request, ct);
     }
 
     static List<BankTransactionDto> MapV1(V1Response body) => body.Transactions.Select(t => new BankTransactionDto(
@@ -65,11 +73,15 @@ public class BankApiClient(HttpClient http, IConfiguration config, ILogger<BankA
 
     async Task<string> GetTokenAsync(CancellationToken ct)
     {
+        if (tokens.Get() is { } cached) return cached;
+
         var response = await http.PostAsJsonAsync("fake-bank/oauth/token",
             new FakeBankEndpoints.TokenRequest(FakeBankEndpoints.ClientId, FakeBankEndpoints.ClientSecret), ct);
         response.EnsureSuccessStatusCode();
-        var token = await response.Content.ReadFromJsonAsync<TokenResponse>(ct);
-        return token!.AccessToken;
+        var token = (await response.Content.ReadFromJsonAsync<TokenResponse>(ct))!;
+        tokens.Set(token.AccessToken, token.ExpiresIn);
+        log.LogInformation("Got a new bank token, valid for {Seconds} s", token.ExpiresIn);
+        return token.AccessToken;
     }
 
     record TokenResponse(string AccessToken, int ExpiresIn);
@@ -77,4 +89,31 @@ public class BankApiClient(HttpClient http, IConfiguration config, ILogger<BankA
     record V1Transaction(string RefNo, string TxnDate, string Amount, string Currency, string Explanation, string Type);
     record V2Response(string Iban, List<V2Transaction> Items);
     record V2Transaction(string ReferenceNumber, DateTimeOffset ValueDate, decimal Amount, string CurrencyCode, string Description, string Direction);
+}
+
+/// <summary>
+/// Keeps the bank token with its expiry time. A singleton, because the typed HttpClient is created anew for every use.
+/// The token is renewed 30 seconds early so a call never starts with a token that runs out on the way.
+/// </summary>
+public class BankTokenStore(TimeProvider clock)
+{
+    static readonly TimeSpan Margin = TimeSpan.FromSeconds(30);
+    readonly Lock _lock = new();
+    string? _token;
+    DateTimeOffset _expiresAt;
+
+    public string? Get()
+    {
+        lock (_lock) return _token is not null && clock.GetUtcNow() < _expiresAt - Margin ? _token : null;
+    }
+
+    public void Set(string token, int expiresInSeconds)
+    {
+        lock (_lock) (_token, _expiresAt) = (token, clock.GetUtcNow().AddSeconds(expiresInSeconds));
+    }
+
+    public void Clear()
+    {
+        lock (_lock) _token = null;
+    }
 }

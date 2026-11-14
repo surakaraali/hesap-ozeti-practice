@@ -12,6 +12,8 @@ var connectionString = builder.Configuration.GetConnectionString("Default") ?? L
 // The factory also registers AppDbContext itself as a scoped service.
 builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connectionString));
 builder.Services.AddHttpClient<BankApiClient>(c => c.BaseAddress = new Uri(builder.Configuration["Bank:BaseUrl"]!));
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<BankTokenStore>();
 builder.Services.AddScoped<TransactionSyncService>();
 builder.Services.AddScoped<ErpExportService>();
 builder.Services.AddSingleton<FakeTigerClient>();
@@ -71,7 +73,7 @@ app.MapGet("/accounts/{id:int}/transactions", async (int id, int? page, int? pag
 
 // Manual triggers, handy while practising. The Quartz jobs call the same services.
 app.MapPost("/sync/run", async (TransactionSyncService sync) =>
-    Results.Ok(new { added = await sync.SyncAsync(DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3))) }));
+    Results.Ok(await sync.SyncAsync(DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3)))));
 app.MapPost("/erp/export", async (ErpExportService export) => Results.Ok(new { exported = await export.ExportPendingAsync() }));
 
 app.Run();
