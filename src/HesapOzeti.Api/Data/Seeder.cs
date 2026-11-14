@@ -70,6 +70,7 @@ public static class Seeder
     /// <summary>
     /// Rows in date order, the same every time (fixed Random seed). The last two days are still Pending for the ERP.
     /// Every 25,000th row comes twice with the same bank reference, as when a bank sends a transaction again.
+    /// The copy is already marked Duplicate, as the PreventDuplicates migration left them; the unique index allows no other state.
     /// </summary>
     public static IEnumerable<BankTransaction> GenerateRows(IReadOnlyList<BankAccount> accounts, int count, DateOnly today)
     {
@@ -102,7 +103,7 @@ public static class Seeder
                 {
                     BankAccountId = row.BankAccountId, BankReferenceNo = row.BankReferenceNo, TransactionDate = row.TransactionDate,
                     Amount = row.Amount, Currency = row.Currency, Description = row.Description, Direction = row.Direction,
-                    ErpSyncStatus = ErpSyncStatus.Pending, CreatedAt = row.CreatedAt.AddDays(1),
+                    ErpSyncStatus = ErpSyncStatus.Duplicate, CreatedAt = row.CreatedAt.AddDays(1),
                 };
         }
     }

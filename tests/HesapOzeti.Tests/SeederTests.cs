@@ -23,4 +23,14 @@ public class SeederTests
         Assert.Equal(3, rows.GroupBy(r => r.BankReferenceNo).Count(g => g.Count() > 1));
         Assert.All(rows, r => Assert.True(r.TransactionDate < Today.ToDateTime(TimeOnly.MinValue)));
     }
+
+    [Fact]
+    public void Seed_rows_fit_the_unique_bank_reference_index()
+    {
+        // The index is (BankAccountId, BankReferenceNo) for rows that are not Duplicate; SqlBulkCopy fails otherwise.
+        var accounts = Seeder.Accounts.Select((a, i) => new BankAccount { Id = i + 1, Iban = a.Iban, BankName = a.BankName, Name = a.Name, Currency = a.Currency }).ToList();
+        var live = Seeder.GenerateRows(accounts, 100_000, Today).Where(r => r.ErpSyncStatus != ErpSyncStatus.Duplicate);
+
+        Assert.DoesNotContain(live.GroupBy(r => (r.BankAccountId, r.BankReferenceNo)), g => g.Count() > 1);
+    }
 }
