@@ -1,0 +1,27 @@
+# SQL Server for local work and for dotnet test.
+#   cp .env.example .env      then set a password
+#   docker-compose up -d --wait
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    # The official image is amd64 only. On Apple Silicon it runs under Rosetta.
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?copy .env.example to .env first}
+      # SQL Server takes all the memory it can get otherwise.
+      MSSQL_MEMORY_LIMIT_MB: 2048
+    ports:
+      - "14334:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -b -Q "SELECT 1"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+volumes:
+  mssql-data:
