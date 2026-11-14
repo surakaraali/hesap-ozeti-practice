@@ -104,11 +104,13 @@ namespace HesapOzeti.Api.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("BankAccountId");
-
                     b.HasIndex("BankAccountId", "BankReferenceNo")
                         .IsUnique()
                         .HasFilter("[ErpSyncStatus] <> 3");
+
+                    b.HasIndex("BankAccountId", "TransactionDate", "Id");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("BankAccountId", "TransactionDate", "Id"), new[] { "ErpSyncStatus" });
 
                     b.ToTable("BankTransactions");
                 });

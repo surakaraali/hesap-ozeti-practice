@@ -23,13 +23,13 @@ public class BankApiClient(HttpClient http, IConfiguration config, BankTokenStor
             ? $"fake-bank/v1/transactions?iban={iban}&date={date.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture)}"
             : $"fake-bank/v2/transactions?iban={iban}&date={date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}";
 
-        var response = await SendAsync(url, ct);
+        var response = await SendWithRetryAsync(url, ct);
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             // The bank can revoke a token before its expiry. Get a fresh one and try once more.
             log.LogWarning("Bank returned 401 for {Iban}, refreshing the token and retrying once", iban);
             tokens.Clear();
-            response = await SendAsync(url, ct);
+            response = await SendWithRetryAsync(url, ct);
         }
 
         if (!response.IsSuccessStatusCode)
@@ -40,6 +40,43 @@ public class BankApiClient(HttpClient http, IConfiguration config, BankTokenStor
 
         return v1 ? MapV1((await response.Content.ReadFromJsonAsync<V1Response>(ct))!)
                   : MapV2((await response.Content.ReadFromJsonAsync<V2Response>(ct))!);
+    }
+
+    static readonly HashSet<HttpStatusCode> Transient =
+    [
+        HttpStatusCode.RequestTimeout, HttpStatusCode.TooManyRequests, HttpStatusCode.InternalServerError,
+        HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.GatewayTimeout,
+    ];
+
+    /// <summary>
+    /// Retries temporary failures (5xx, 408, 429, network errors) with a growing wait: 0.5 s, 1 s, ...
+    /// Other errors (400, 401, 404) are returned at once, because trying again would give the same answer.
+    /// Reading transactions is safe to repeat, so retrying here can never create anything twice.
+    /// </summary>
+    async Task<HttpResponseMessage> SendWithRetryAsync(string url, CancellationToken ct)
+    {
+        var maxAttempts = config.GetValue("Bank:MaxAttempts", 3);
+        var baseDelay = TimeSpan.FromMilliseconds(config.GetValue("Bank:RetryBaseDelayMs", 500));
+
+        for (var attempt = 1; ; attempt++)
+        {
+            string reason;
+            try
+            {
+                var response = await SendAsync(url, ct);
+                if (!Transient.Contains(response.StatusCode) || attempt >= maxAttempts) return response;
+                reason = $"HTTP {(int)response.StatusCode}";
+            }
+            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested && attempt < maxAttempts)
+            {
+                reason = ex.GetType().Name;
+            }
+
+            var delay = baseDelay * Math.Pow(2, attempt - 1);
+            log.LogWarning("Bank call failed ({Reason}), attempt {Attempt}/{Max}, retrying in {Delay} ms: {Url}",
+                reason, attempt, maxAttempts, delay.TotalMilliseconds, url);
+            await Task.Delay(delay, ct);
+        }
     }
 
     async Task<HttpResponseMessage> SendAsync(string url, CancellationToken ct)

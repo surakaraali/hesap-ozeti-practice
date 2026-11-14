@@ -1,6 +1,7 @@
 using HesapOzeti.Api.Data;
 using HesapOzeti.Api.Erp;
 using HesapOzeti.Api.FakeBank;
+using HesapOzeti.Api.Statements;
 using HesapOzeti.Api.Sync;
 using Microsoft.EntityFrameworkCore;
 using Quartz;
@@ -47,28 +48,21 @@ app.MapFakeBank();
 
 app.MapGet("/accounts", (AppDbContext db) => db.BankAccounts.AsNoTracking().ToListAsync());
 
-app.MapGet("/accounts/{id:int}/transactions", async (int id, int? page, int? pageSize, DateTime? from, DateTime? to, AppDbContext db) =>
+app.MapGet("/accounts/{id:int}/transactions", async (int id, string? cursor, int? pageSize, DateTime? from, DateTime? to,
+    AppDbContext db, CancellationToken ct) =>
 {
-    var account = await db.BankAccounts.FirstOrDefaultAsync(a => a.Id == id);
-    if (account is null) return Results.NotFound();
-
-    var p = page ?? 1;
     var size = pageSize ?? 50;
-    var query = db.BankTransactions.Where(t => t.BankAccountId == id && t.ErpSyncStatus != ErpSyncStatus.Duplicate);
-    if (from is not null) query = query.Where(t => t.TransactionDate >= from);
-    if (to is not null) query = query.Where(t => t.TransactionDate < to);
-
-    var total = await query.CountAsync();
-    var rows = await query.OrderByDescending(t => t.TransactionDate).Skip((p - 1) * size).Take(size).ToListAsync();
-
-    var items = new List<TransactionRow>();
-    foreach (var t in rows)
+    if (size is < 1 or > TransactionList.MaxPageSize)
+        return Results.BadRequest(new { error = $"pageSize must be between 1 and {TransactionList.MaxPageSize}" });
+    Cursor? after = null;
+    if (cursor is not null)
     {
-        var voucher = await db.ErpVouchers.FirstOrDefaultAsync(v => v.BankTransactionId == t.Id);
-        items.Add(new TransactionRow(t.Id, t.BankReferenceNo, t.TransactionDate, t.Amount, t.Currency, t.Description,
-            t.Direction.ToString(), t.ErpSyncStatus.ToString(), voucher?.VoucherNo));
+        if (!Cursor.TryParse(cursor, out var c)) return Results.BadRequest(new { error = "invalid cursor" });
+        after = c;
     }
-    return Results.Ok(new { account.Iban, total, page = p, pageSize = size, items });
+
+    var page = await TransactionList.GetPageAsync(db, id, after, size, from, to, ct);
+    return page is null ? Results.NotFound() : Results.Ok(page);
 });
 
 // Manual triggers, handy while practising. The Quartz jobs call the same services.
@@ -77,6 +71,3 @@ app.MapPost("/sync/run", async (TransactionSyncService sync) =>
 app.MapPost("/erp/export", async (ErpExportService export) => Results.Ok(new { exported = await export.ExportPendingAsync() }));
 
 app.Run();
-
-public record TransactionRow(long Id, string BankReferenceNo, DateTime TransactionDate, decimal Amount, string Currency,
-    string Description, string Direction, string ErpSyncStatus, string? VoucherNo);

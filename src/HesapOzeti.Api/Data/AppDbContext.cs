@@ -25,8 +25,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Amount).HasColumnType("decimal(18,2)");
             e.Property(x => x.Currency).HasMaxLength(3);
             e.Property(x => x.Description).HasMaxLength(250);
-            // Kept on purpose: the filtered index below cannot serve a plain "WHERE BankAccountId = x".
-            e.HasIndex(x => x.BankAccountId);
+            // Statement list: seek to the account, read newest first, stop after one page. Id breaks ties for the cursor.
+            // ErpSyncStatus is included so the Duplicate filter and COUNT need no lookups into the table.
+            // Not filtered, so it also serves the foreign key and any "WHERE BankAccountId = x".
+            e.HasIndex(x => new { x.BankAccountId, x.TransactionDate, x.Id }).IncludeProperties(x => x.ErpSyncStatus);
             // The bank's reference is unique per account. Old duplicates are kept but left out of the index.
             e.HasIndex(x => new { x.BankAccountId, x.BankReferenceNo }).IsUnique().HasFilter("[ErpSyncStatus] <> 3");
         });

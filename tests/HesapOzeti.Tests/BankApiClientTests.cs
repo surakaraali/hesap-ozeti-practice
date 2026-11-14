@@ -93,12 +93,33 @@ public class BankApiClientTests
         Assert.Contains("TR01", ex.Message);
     }
 
+    [Fact]
+    public async Task Retries_a_temporary_bank_error_and_then_succeeds()
+    {
+        var calls = 0;
+        var bank = new StubBank(_ => ++calls < 3 ? (HttpStatusCode.ServiceUnavailable, "{}") : (HttpStatusCode.OK, V2Json));
+        var (client, _) = Client("v2", bank);
+
+        Assert.Single(await client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)));
+        Assert.Equal(3, calls);
+    }
+
+    [Fact]
+    public async Task Does_not_retry_an_error_that_would_repeat()
+    {
+        var calls = 0;
+        var (client, _) = Client("v2", new StubBank(_ => { calls++; return (HttpStatusCode.BadRequest, "{}"); }));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTransactionsAsync("TR01", new DateOnly(2026, 11, 5)));
+        Assert.Equal(1, calls);
+    }
+
     static (BankApiClient, StubBank) Client(string? version, string json, BankTokenStore? tokens = null) =>
         Client(version, new StubBank(_ => (HttpStatusCode.OK, json)), tokens);
 
     internal static (BankApiClient, StubBank) Client(string? version, StubBank bank, BankTokenStore? tokens = null)
     {
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Bank:ApiVersion"] = version }).Build();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Bank:ApiVersion"] = version, ["Bank:RetryBaseDelayMs"] = "0" }).Build();
         var client = new BankApiClient(new HttpClient(bank) { BaseAddress = new Uri("http://bank/") }, config,
             tokens ?? new BankTokenStore(TimeProvider.System), NullLogger<BankApiClient>.Instance);
         return (client, bank);
