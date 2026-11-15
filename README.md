@@ -99,6 +99,8 @@ kuruluyor (`Data/LocalDb.cs`). İstersen `ConnectionStrings__Default` ile tamame
 - **Tarih:** `TransactionDate` bankanın verdiği Türkiye saatidir (UTC+3). `CreatedAt` ise UTC.
 - **Mükerrer banka hareketi:** `(BankAccountId, BankReferenceNo)` unique. Eski mükerrerler silinmedi, `ErpSyncStatus = Duplicate (3)`
   olarak işaretlendi ve index'in dışında tutuluyor. Listede görünmezler, ERP'ye aktarılmazlar.
+  Banka aynı referansı tek bir cevapta iki kez gönderirse bir kez kaydedilir ve uyarı loglanır. Kayıt hesap bazında yapılır,
+  bir hesaptaki hata diğer hesapların hareketlerini durdurmaz.
 - **ERP idempotency:** `ErpVouchers.BankTransactionId` iptal edilmemiş fişler için unique, idempotency anahtarı bu.
   Tiger zaman aşımı verip fişi yine de yazmışsa, bir sonraki deneme yeni fiş yazmaz, mevcut fişi döner.
   İptal edilen fişlerde `CancelledAt` dolu.
@@ -106,7 +108,7 @@ kuruluyor (`Data/LocalDb.cs`). İstersen `ConnectionStrings__Default` ile tamame
 
 ## Testler
 
-`dotnet test` 22 test çalıştırıyor:
+`dotnet test` 23 test çalıştırıyor:
 - Banka çağrıları bir `HttpMessageHandler` stub'ıyla test ediliyor: v1/v2 eşlemesi, token yenileme, 401, retry.
 - Veritabanı testleri `HesapOzetiPractice_Tests` veritabanını her çalıştırmada sıfırdan kuruyor. Paralel çalışabilmeleri için her test kendi hesabını açıyor.
 

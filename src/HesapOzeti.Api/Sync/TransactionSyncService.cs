@@ -41,7 +41,13 @@ public class TransactionSyncService(AppDbContext db, BankApiClient bank, ILogger
                 .Select(t => t.BankReferenceNo)
                 .ToListAsync(ct);
 
-            foreach (var t in fromBank.Where(t => !known.Contains(t.ReferenceNo)))
+            var unknown = fromBank.Where(t => !known.Contains(t.ReferenceNo)).ToList();
+            var fresh = unknown.DistinctBy(t => t.ReferenceNo).ToList();
+            if (fresh.Count < unknown.Count)
+                log.LogWarning("Bank repeated {Count} reference(s) in its response for account {AccountId}; each is saved once",
+                    unknown.Count - fresh.Count, account.Id);
+
+            foreach (var t in fresh)
             {
                 db.BankTransactions.Add(new BankTransaction
                 {
@@ -55,11 +61,23 @@ public class TransactionSyncService(AppDbContext db, BankApiClient bank, ILogger
                     ErpSyncStatus = ErpSyncStatus.Pending,
                     CreatedAt = DateTime.UtcNow,
                 });
-                added++;
+            }
+
+            // Saved per account: a rejected row (e.g. a manual sync stored the same reference a moment ago)
+            // costs only this account's batch, and the next run reads the same days again.
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                added += fresh.Count;
+            }
+            catch (DbUpdateException ex)
+            {
+                log.LogError(ex, "Saving failed for account {AccountId} ({Iban})", account.Id, account.Iban);
+                db.ChangeTracker.Clear();
+                failed++;
             }
         }
 
-        await db.SaveChangesAsync(ct);
         if (failed > 0)
             log.LogWarning("Sync finished with errors: {Added} new transactions, {Failed}/{Total} accounts failed", added, failed, accounts.Count);
         else

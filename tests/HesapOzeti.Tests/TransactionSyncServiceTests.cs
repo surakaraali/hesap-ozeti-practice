@@ -45,16 +45,34 @@ public class TransactionSyncServiceTests
         Assert.Equal([new DateTime(2026, 11, 4), new DateTime(2026, 11, 5)], dates.Order());
     }
 
+    [Fact]
+    public async Task A_reference_repeated_in_one_bank_response_is_saved_once_and_stops_no_other_account()
+    {
+        await using var db = TestDb.NewContext();
+        var repeating = await TestDb.NewAccountAsync(db);
+        var healthy = await TestDb.NewAccountAsync(db);
+        var bank = new StubBank(r =>
+            r.RequestUri!.Query.Contains(repeating.Iban) ? (HttpStatusCode.OK, ItemJson(repeating.Iban, r.RequestUri.Query, copies: 2))
+            : r.RequestUri.Query.Contains(healthy.Iban) ? (HttpStatusCode.OK, ItemJson(healthy.Iban, r.RequestUri.Query))
+            : (HttpStatusCode.OK, """{"iban":"x","items":[]}"""));
+
+        await Service(db, bank).SyncAsync(Today);
+
+        Assert.Equal(2, await db.BankTransactions.CountAsync(t => t.BankAccountId == repeating.Id)); // yesterday + today, once each
+        Assert.Equal(2, await db.BankTransactions.CountAsync(t => t.BankAccountId == healthy.Id));
+    }
+
     static TransactionSyncService Service(AppDbContext db, StubBank bank) =>
         new(db, BankApiClientTests.Client("v2", bank).Item1, NullLogger<TransactionSyncService>.Instance);
 
-    /// <summary>One transaction per IBAN and day, dated on the day that was asked for.</summary>
-    static string ItemJson(string iban, string query)
+    /// <summary>One transaction per IBAN and day, dated on the day that was asked for. <paramref name="copies"/> repeats it in the response.</summary>
+    static string ItemJson(string iban, string query, int copies = 1)
     {
         var date = query[(query.IndexOf("date=") + 5)..];
-        return $$"""
-            {"iban":"{{iban}}","items":[{"referenceNumber":"{{iban[^6..]}}{{date}}","valueDate":"{{date}}T10:00:00+03:00",
-             "amount":10,"currencyCode":"TRY","description":"t","direction":"CREDIT"}]}
+        var item = $$"""
+            {"referenceNumber":"{{iban[^6..]}}{{date}}","valueDate":"{{date}}T10:00:00+03:00",
+             "amount":10,"currencyCode":"TRY","description":"t","direction":"CREDIT"}
             """;
+        return $$"""{"iban":"{{iban}}","items":[{{string.Join(",", Enumerable.Repeat(item, copies))}}]}""";
     }
 }
